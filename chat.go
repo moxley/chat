@@ -14,6 +14,7 @@ import (
 type Client struct {
 	ID   string
 	Conn *websocket.Conn
+	Name string
 }
 
 // ChatServer server context
@@ -23,12 +24,14 @@ type ChatServer struct {
 
 // RawMessage unprocessed message
 type RawMessage struct {
-	err    error
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Data   string `json:"data"`
-	client *Client
-	server *ChatServer
+	err      error
+	From     string `json:"from"`
+	FromName string `json:"fromName"`
+	To       string `json:"to"`
+	Data     string `json:"data"`
+	Action   string `json:"action"`
+	client   *Client
+	server   *ChatServer
 }
 
 // Message a message
@@ -44,7 +47,9 @@ func createClient(ws *websocket.Conn, server *ChatServer) *Client {
 	if err != nil {
 		panic("Failed to create UUID")
 	}
+
 	id := u.String()
+
 	client := Client{ID: id, Conn: ws}
 	fmt.Printf("Client connected. ID given: %v\n", client.ID)
 	server.Clients[client.ID] = &client
@@ -79,9 +84,23 @@ func clientsAsArray(clients map[string]*Client) []*Client {
 	return v
 }
 
+func allClients(server *ChatServer) []*Client {
+	return clientsAsArray(server.Clients)
+}
+
+func allClientsExceptID(server *ChatServer, id string) []*Client {
+	var chosenClients []*Client
+	for _, client := range clientsAsArray(server.Clients) {
+		if client.ID != id {
+			chosenClients = append(chosenClients, client)
+		}
+	}
+	return chosenClients
+}
+
 func calculateReceivers(msg *Message, server *ChatServer) []*Client {
 	if msg.ToStr == "all" {
-		return clientsAsArray(server.Clients)
+		return allClients(server)
 	} else if msg.To == nil {
 		return []*Client{}
 	}
@@ -97,15 +116,48 @@ func handleIncomingMessage(rawMsg RawMessage, err error) error {
 
 	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", rawMsg.client.ID, rawMsg.To, rawMsg.Data)
 
+	if rawMsg.Action == "set-name" {
+		rawMsg.client.Name = rawMsg.Data
+		outMsg := RawMessage{
+			To:       rawMsg.client.ID,
+			FromName: "auto-reply",
+			Data:     "Welcome " + rawMsg.client.Name,
+		}
+		err = websocket.JSON.Send(rawMsg.client.Conn, &outMsg)
+		if err != nil {
+			fmt.Println("Failed to send message: " + err.Error())
+			return err
+		}
+		for _, client := range allClientsExceptID(rawMsg.server, rawMsg.client.ID) {
+			fmt.Println("Sending new user notification to client name=" + client.Name)
+			outMsg := RawMessage{
+				To:       client.ID,
+				FromName: "auto-reply",
+				Data:     rawMsg.client.Name + " has joined",
+			}
+			err = websocket.JSON.Send(client.Conn, &outMsg)
+			if err != nil {
+				fmt.Println("Failed to send message: " + err.Error())
+				return err
+			}
+		}
+		return err
+	}
+
 	// Determine destination
 	msg, err := parseMessage(rawMsg)
 	receivers := calculateReceivers(&msg, rawMsg.server)
 
 	if err != nil {
-		outMsg := RawMessage{To: rawMsg.client.ID, Data: "Error: invalid message format"}
+		outMsg := RawMessage{
+			To:       rawMsg.client.ID,
+			FromName: "auto-reply",
+			Data:     "Error: invalid message format",
+		}
 		err := websocket.JSON.Send(rawMsg.client.Conn, &outMsg)
 		if err != nil {
-			panic("Failed to send message: " + err.Error())
+			fmt.Println("Failed to send message: " + err.Error())
+			return err
 		}
 	} else {
 		if len(receivers) == 0 {
@@ -113,10 +165,16 @@ func handleIncomingMessage(rawMsg RawMessage, err error) error {
 		} else {
 			for _, recip := range receivers {
 				fmt.Printf("Sending Message: %v\n", msg)
-				outMsg := RawMessage{From: rawMsg.client.ID, To: recip.ID, Data: msg.Body}
+				outMsg := RawMessage{
+					From:     rawMsg.client.ID,
+					FromName: rawMsg.client.Name,
+					To:       recip.ID,
+					Data:     msg.Body,
+				}
 				err := websocket.JSON.Send(recip.Conn, &outMsg)
 				if err != nil {
-					panic("Failed to send message: " + err.Error())
+					fmt.Println("Failed to send message: " + err.Error())
+					return err
 				}
 			}
 		}

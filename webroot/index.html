@@ -5,6 +5,8 @@
         <title>Sample of websocket with golang</title>
 
         <style media="screen">
+            .hidden { display: none !important; }
+
             .client {
                 width: 500px;
                 height: 200px;
@@ -79,7 +81,7 @@
               var $from = $('<span class="from-line">');
               $from.
                   append($('<img src="speech-bubble.svg" alt="Speech bubble icon" class="from-icon">')).
-                  append($('<span class="from-text">').text(data.from))
+                  append($('<span class="from-text">').text(data.fromName))
               var $messageBody = $('<span>').addClass('message-body');
               $messageBody.text(data.data);
               $('<li>').
@@ -88,27 +90,69 @@
                   appendTo($ul);
               $ul[0].scrollTop = $ul[0].scrollHeight;
           }
-          function buildClient(selector) {
+          function buildClient(userName, selector) {
               return function() {
                   var ws = new WebSocket("ws://localhost:8080/echo");
-                  var $ul = $('.msg-list', selector);
-                  ws.onmessage = function(e) {
-                      onMessage(e, ws, $ul);
+                  ws.onopen = function() {
+                      console.log("Connected. Registering...");
+
+                      // Register
+                      var msg = {action: 'set-name', data: userName};
+                      ws.send(JSON.stringify(msg));
+
+                      var $ul = $('.msg-list', selector);
+                      console.log("$ul:", $ul);
+                      ws.onmessage = function(e) {
+                          onMessage(e, ws, $ul);
+                      }
+                      $('.compose-input', selector).
+                          keypress(function(e) {
+                              if(e.which == 13) {
+                                  handleSendMessage(selector, ws);
+                              }
+                          }).
+                          focus();
                   }
-                  $('.compose-input', selector).
-                      keypress(function(e) {
-                          if(e.which == 13) {
-                              handleSendMessage(selector, ws);
-                          }
-                      }).
-                      focus();
               }
           }
-          $(buildClient("#client"));
+          function handleRegister(selector) {
+              var userName = $('.name-input', selector).val().trim();
+              if (userName.length == 0) {
+                  alert("Please choose a name");
+                  return;
+              }
+
+              $(selector).addClass('hidden');
+              $('#client').removeClass('hidden');
+              $(buildClient(userName, "#client"));
+          }
+          function buildRegistration(selector) {
+              console.log("name-input:", $('.name-input', selector));
+              $('.name-input', selector).
+                  keypress(function(e) {
+                      if(e.which == 13) {
+                          handleRegister(selector);
+                      }
+                  }).
+                  focus();
+          }
+
+          $(document).ready(function() {
+              buildRegistration('#registration');
+          });
         </script>
     </head>
     <body>
-        <div id="client" class="client">
+        <div id="registration" class="registration">
+            <p>
+                Welcome to the chat room.
+            </p>
+            <label>
+                What name shall you be known as?
+                <input type="text" class="name-input" name="name" value="">
+            </label>
+        </div>
+        <div id="client" class="client hidden">
             <ul class="msg-list"></ul>
             <input type="text" class="compose-input" />
         </div>
