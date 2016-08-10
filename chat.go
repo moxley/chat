@@ -4,7 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
+
+	"github.com/nu7hatch/gouuid"
 
 	"golang.org/x/net/websocket"
 )
@@ -23,6 +24,7 @@ type ChatServer struct {
 // RawMessage unprocessed message
 type RawMessage struct {
 	err    error
+	From   string `json:"from"`
 	To     string `json:"to"`
 	Data   string `json:"data"`
 	client *Client
@@ -31,31 +33,73 @@ type RawMessage struct {
 
 // Message a message
 type Message struct {
-	Body string
-	From *Client
-	To   *Client
+	Body  string
+	From  *Client
+	To    *Client
+	ToStr string
 }
 
-func clientHandler(ws *websocket.Conn, server *ChatServer) http.HandlerFunc {
-	client := Client{ID: strconv.Itoa(len(server.Clients) + 1), Conn: ws}
+func createClient(ws *websocket.Conn, server *ChatServer) *Client {
+	u, err := uuid.NewV4()
+	if err != nil {
+		panic("Failed to create UUID")
+	}
+	id := u.String()
+	client := Client{ID: id, Conn: ws}
 	fmt.Printf("Client connected. ID given: %v\n", client.ID)
 	server.Clients[client.ID] = &client
+	return &client
+}
+
+func destroyClient(client *Client, server *ChatServer) {
+	delete(server.Clients, client.ID)
+	client.Conn.Close()
+}
+
+func clientHandler(ws *websocket.Conn, server *ChatServer) {
+	client := createClient(ws, server)
 	for {
-		rawMsg := RawMessage{client: &client, server: server}
+		rawMsg := RawMessage{client: client, server: server}
 		err := websocket.JSON.Receive(client.Conn, &rawMsg)
 		rawMsg.err = err
-		handleIncomingMessage(rawMsg, err)
+		err = handleIncomingMessage(rawMsg, err)
+		if err != nil {
+			break
+		}
 	}
 }
 
-func handleIncomingMessage(rawMsg RawMessage, err error) {
-	if err != nil {
-		panic("Failed to receive message: " + err.Error())
+func clientsAsArray(clients map[string]*Client) []*Client {
+	v := make([]*Client, len(clients), len(clients))
+	idx := 0
+	for _, value := range clients {
+		v[idx] = value
+		idx++
 	}
+	return v
+}
+
+func calculateReceivers(msg *Message, server *ChatServer) []*Client {
+	if msg.ToStr == "all" {
+		return clientsAsArray(server.Clients)
+	} else if msg.To == nil {
+		return []*Client{}
+	}
+	return []*Client{msg.To}
+}
+
+func handleIncomingMessage(rawMsg RawMessage, err error) error {
+	if err != nil {
+		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", rawMsg.client.ID)
+		destroyClient(rawMsg.client, rawMsg.server)
+		return errors.New("Client failed")
+	}
+
+	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", rawMsg.client.ID, rawMsg.To, rawMsg.Data)
 
 	// Determine destination
 	msg, err := parseMessage(rawMsg)
-	fmt.Printf("Received message from id: %v: %s\n", rawMsg.client.ID, msg.Body)
+	receivers := calculateReceivers(&msg, rawMsg.server)
 
 	if err != nil {
 		outMsg := RawMessage{To: rawMsg.client.ID, Data: "Error: invalid message format"}
@@ -64,15 +108,20 @@ func handleIncomingMessage(rawMsg RawMessage, err error) {
 			panic("Failed to send message: " + err.Error())
 		}
 	} else {
-		if msg.To != nil {
-			fmt.Printf("Sending Message: %v\n", msg)
-			outMsg := RawMessage{To: msg.To.ID, Data: msg.Body}
-			err := websocket.JSON.Send(msg.To.Conn, &outMsg)
-			if err != nil {
-				panic("Failed to send message: " + err.Error())
+		if len(receivers) == 0 {
+			fmt.Printf("No receiver found for id=%v\n", rawMsg.To)
+		} else {
+			for _, recip := range receivers {
+				fmt.Printf("Sending Message: %v\n", msg)
+				outMsg := RawMessage{From: rawMsg.client.ID, To: recip.ID, Data: msg.Body}
+				err := websocket.JSON.Send(recip.Conn, &outMsg)
+				if err != nil {
+					panic("Failed to send message: " + err.Error())
+				}
 			}
 		}
 	}
+	return nil
 }
 
 func parseMessage(rawMsg RawMessage) (Message, error) {
@@ -86,7 +135,7 @@ func parseMessage(rawMsg RawMessage) (Message, error) {
 		parseError = errors.New("Could not determine message destination")
 		to = nil
 	}
-	msg := Message{Body: rawMsg.Data, From: rawMsg.client, To: to}
+	msg := Message{Body: rawMsg.Data, From: rawMsg.client, To: to, ToStr: rawMsg.To}
 	return msg, parseError
 }
 
