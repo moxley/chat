@@ -5,66 +5,49 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/nu7hatch/gouuid"
-
+	chatserver "github.com/moxley/chat/chatserver"
 	"golang.org/x/net/websocket"
 )
 
-// Client a chat client
-type Client struct {
-	ID   string
-	Conn *websocket.Conn
-	Name string
-}
-
-// RawMessage unprocessed message
-type RawMessage struct {
+// Frame is an incoming or outgoing Frame
+type Frame struct {
 	err      error
 	From     string `json:"from"`
 	FromName string `json:"fromName"`
 	To       string `json:"to"`
 	Data     string `json:"data"`
 	Action   string `json:"action"`
-	client   *Client
+	client   *chatserver.Client
 }
 
 // Message a message
 type Message struct {
 	Body  string
-	From  *Client
-	To    *Client
+	From  *chatserver.Client
+	To    *chatserver.Client
 	ToStr string
 }
 
-func createClient(ws *websocket.Conn) *Client {
-	u, err := uuid.NewV4()
-	if err != nil {
-		panic("Failed to create UUID")
-	}
-
-	id := u.String()
-
-	client := Client{ID: id, Conn: ws}
-
-	return &client
-}
-
-func clientHandler(ws *websocket.Conn, server *ChatServer) {
-	client := server.createAndRegisterClient(ws)
+func clientHandler(ws *websocket.Conn, server *chatserver.ChatServer) {
+	client := server.CreateAndRegisterClient(ws)
 	for {
-		rawMsg := RawMessage{client: client}
-		err := websocket.JSON.Receive(client.Conn, &rawMsg)
-		rawMsg.err = err
-		err = handleIncomingMessage(server, rawMsg, err)
+		err := receiveFrame(client, server)
 		if err != nil {
 			break
 		}
 	}
 }
 
-func allClientsExceptID(server *ChatServer, id string) []*Client {
-	var chosenClients []*Client
-	for _, client := range server.allClients() {
+func receiveFrame(client *chatserver.Client, server *chatserver.ChatServer) error {
+	frame := Frame{client: client}
+	err := websocket.JSON.Receive(client.Conn, &frame)
+	fmt.Println("Incoming message")
+	return handleIncomingMessage(server, frame, err)
+}
+
+func allClientsExceptID(server *chatserver.ChatServer, id string) []*chatserver.Client {
+	var chosenClients []*chatserver.Client
+	for _, client := range server.AllClients() {
 		if client.ID != id {
 			chosenClients = append(chosenClients, client)
 		}
@@ -72,42 +55,42 @@ func allClientsExceptID(server *ChatServer, id string) []*Client {
 	return chosenClients
 }
 
-func calculateReceivers(msg *Message, server *ChatServer) []*Client {
+func calculateReceivers(msg *Message, server *chatserver.ChatServer) []*chatserver.Client {
 	if msg.ToStr == "all" {
-		return server.allClients()
+		return server.AllClients()
 	} else if msg.To == nil {
-		return []*Client{}
+		return []*chatserver.Client{}
 	}
-	return []*Client{msg.To}
+	return []*chatserver.Client{msg.To}
 }
 
-func handleIncomingMessage(server *ChatServer, rawMsg RawMessage, err error) error {
+func handleIncomingMessage(server *chatserver.ChatServer, frame Frame, err error) error {
 	if err != nil {
-		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", rawMsg.client.ID)
-		server.destroyClient(rawMsg.client)
+		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", frame.client.ID)
+		server.DestroyClient(frame.client)
 		return errors.New("Client failed")
 	}
 
-	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", rawMsg.client.ID, rawMsg.To, rawMsg.Data)
+	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", frame.client.ID, frame.To, frame.Data)
 
-	if rawMsg.Action == "set-name" {
-		rawMsg.client.Name = rawMsg.Data
-		outMsg := RawMessage{
-			To:       rawMsg.client.ID,
+	if frame.Action == "set-name" {
+		frame.client.Name = frame.Data
+		outMsg := Frame{
+			To:       frame.client.ID,
 			FromName: "auto-reply",
-			Data:     "Welcome " + rawMsg.client.Name,
+			Data:     "Welcome " + frame.client.Name,
 		}
-		err = websocket.JSON.Send(rawMsg.client.Conn, &outMsg)
+		err = websocket.JSON.Send(frame.client.Conn, &outMsg)
 		if err != nil {
 			fmt.Println("Failed to send message: " + err.Error())
 			return err
 		}
-		for _, client := range allClientsExceptID(server, rawMsg.client.ID) {
+		for _, client := range allClientsExceptID(server, frame.client.ID) {
 			fmt.Println("Sending new user notification to client name=" + client.Name)
-			outMsg := RawMessage{
+			outMsg := Frame{
 				To:       client.ID,
 				FromName: "auto-reply",
-				Data:     rawMsg.client.Name + " has joined",
+				Data:     frame.client.Name + " has joined",
 			}
 			err = websocket.JSON.Send(client.Conn, &outMsg)
 			if err != nil {
@@ -119,29 +102,29 @@ func handleIncomingMessage(server *ChatServer, rawMsg RawMessage, err error) err
 	}
 
 	// Determine destination
-	msg, err := parseMessage(server, rawMsg)
-	receivers := calculateReceivers(&msg, server)
+	msg, err := parseMessage(server, frame)
 
 	if err != nil {
-		outMsg := RawMessage{
-			To:       rawMsg.client.ID,
+		outMsg := Frame{
+			To:       frame.client.ID,
 			FromName: "auto-reply",
 			Data:     "Error: invalid message format",
 		}
-		err := websocket.JSON.Send(rawMsg.client.Conn, &outMsg)
+		err := websocket.JSON.Send(frame.client.Conn, &outMsg)
 		if err != nil {
 			fmt.Println("Failed to send message: " + err.Error())
 			return err
 		}
 	} else {
+		receivers := calculateReceivers(msg, server)
 		if len(receivers) == 0 {
-			fmt.Printf("No receiver found for id=%v\n", rawMsg.To)
+			fmt.Printf("No receiver found for id=%v\n", frame.To)
 		} else {
 			for _, recip := range receivers {
 				fmt.Printf("Sending Message: %v\n", msg)
-				outMsg := RawMessage{
-					From:     rawMsg.client.ID,
-					FromName: rawMsg.client.Name,
+				outMsg := Frame{
+					From:     frame.client.ID,
+					FromName: frame.client.Name,
 					To:       recip.ID,
 					Data:     msg.Body,
 				}
@@ -156,23 +139,21 @@ func handleIncomingMessage(server *ChatServer, rawMsg RawMessage, err error) err
 	return nil
 }
 
-func parseMessage(server *ChatServer, rawMsg RawMessage) (Message, error) {
-	var to *Client
+func parseMessage(server *chatserver.ChatServer, frame Frame) (*Message, error) {
+	var to *chatserver.Client
 	var parseError error
-	if rawMsg.err == nil {
-		parseError = nil
-		to = server.findClient(rawMsg.To)
 
-	} else {
-		// Could not determine destination
-		parseError = errors.New("Could not determine message destination")
+	// TODO Better validation
+	if frame.To == "" {
+		parseError = errors.New("No destination specified")
 		to = nil
 	}
-	msg := Message{Body: rawMsg.Data, From: rawMsg.client, To: to, ToStr: rawMsg.To}
-	return msg, parseError
+
+	msg := Message{Body: frame.Data, From: frame.client, To: to, ToStr: frame.To}
+	return &msg, parseError
 }
 
-func makeHandler(server *ChatServer) websocket.Handler {
+func makeHandler(server *chatserver.ChatServer) websocket.Handler {
 	return func(ws *websocket.Conn) {
 		clientHandler(ws, server)
 	}
@@ -187,7 +168,7 @@ func listen() int {
 	return 0
 }
 
-func createChatHandler(server *ChatServer) websocket.Handler {
+func createChatHandler(server *chatserver.ChatServer) websocket.Handler {
 	return makeHandler(server)
 }
 
