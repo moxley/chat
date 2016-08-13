@@ -39,7 +39,6 @@ type RawMessage struct {
 	Data     string `json:"data"`
 	Action   string `json:"action"`
 	client   *Client
-	server   *ChatServer
 }
 
 // Message a message
@@ -50,7 +49,7 @@ type Message struct {
 	ToStr string
 }
 
-func createClient(ws *websocket.Conn, server *ChatServer) *Client {
+func createClient(ws *websocket.Conn) *Client {
 	u, err := uuid.NewV4()
 	if err != nil {
 		panic("Failed to create UUID")
@@ -63,30 +62,30 @@ func createClient(ws *websocket.Conn, server *ChatServer) *Client {
 	return &client
 }
 
-func registerClient(server *ChatServer, client *Client) {
+func (server *ChatServer) registerClient(client *Client) {
 	// Register client
 	server.Clients.Lock()
 	server.Clients.m[client.ID] = client
 	server.Clients.Unlock()
 }
 
-func createAndRegisterClient(ws *websocket.Conn, server *ChatServer) *Client {
-	client := createClient(ws, server)
-	registerClient(server, client)
+func (server *ChatServer) createAndRegisterClient(ws *websocket.Conn) *Client {
+	client := createClient(ws)
+	server.registerClient(client)
 
 	fmt.Printf("Client connected. ID given: %v\n", client.ID)
 
 	return client
 }
 
-func findClient(server *ChatServer, id string) *Client {
+func (server *ChatServer) findClient(id string) *Client {
 	server.Clients.RLock()
 	fetchedClient := server.Clients.m[id]
 	server.Clients.RUnlock()
 	return fetchedClient
 }
 
-func destroyClient(client *Client, server *ChatServer) {
+func (server *ChatServer) destroyClient(client *Client) {
 	server.Clients.Lock()
 	delete(server.Clients.m, client.ID)
 	server.Clients.Unlock()
@@ -94,19 +93,19 @@ func destroyClient(client *Client, server *ChatServer) {
 }
 
 func clientHandler(ws *websocket.Conn, server *ChatServer) {
-	client := createAndRegisterClient(ws, server)
+	client := server.createAndRegisterClient(ws)
 	for {
-		rawMsg := RawMessage{client: client, server: server}
+		rawMsg := RawMessage{client: client}
 		err := websocket.JSON.Receive(client.Conn, &rawMsg)
 		rawMsg.err = err
-		err = handleIncomingMessage(rawMsg, err)
+		err = handleIncomingMessage(server, rawMsg, err)
 		if err != nil {
 			break
 		}
 	}
 }
 
-func clientsAsArray(registry *ClientsRegistry) []*Client {
+func (registry *ClientsRegistry) asArray() []*Client {
 	registry.RLock()
 	v := make([]*Client, len(registry.m), len(registry.m))
 	idx := 0
@@ -118,13 +117,13 @@ func clientsAsArray(registry *ClientsRegistry) []*Client {
 	return v
 }
 
-func allClients(server *ChatServer) []*Client {
-	return clientsAsArray(&server.Clients)
+func (server *ChatServer) allClients() []*Client {
+	return server.Clients.asArray()
 }
 
 func allClientsExceptID(server *ChatServer, id string) []*Client {
 	var chosenClients []*Client
-	for _, client := range clientsAsArray(&server.Clients) {
+	for _, client := range server.allClients() {
 		if client.ID != id {
 			chosenClients = append(chosenClients, client)
 		}
@@ -134,17 +133,17 @@ func allClientsExceptID(server *ChatServer, id string) []*Client {
 
 func calculateReceivers(msg *Message, server *ChatServer) []*Client {
 	if msg.ToStr == "all" {
-		return allClients(server)
+		return server.allClients()
 	} else if msg.To == nil {
 		return []*Client{}
 	}
 	return []*Client{msg.To}
 }
 
-func handleIncomingMessage(rawMsg RawMessage, err error) error {
+func handleIncomingMessage(server *ChatServer, rawMsg RawMessage, err error) error {
 	if err != nil {
 		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", rawMsg.client.ID)
-		destroyClient(rawMsg.client, rawMsg.server)
+		server.destroyClient(rawMsg.client)
 		return errors.New("Client failed")
 	}
 
@@ -162,7 +161,7 @@ func handleIncomingMessage(rawMsg RawMessage, err error) error {
 			fmt.Println("Failed to send message: " + err.Error())
 			return err
 		}
-		for _, client := range allClientsExceptID(rawMsg.server, rawMsg.client.ID) {
+		for _, client := range allClientsExceptID(server, rawMsg.client.ID) {
 			fmt.Println("Sending new user notification to client name=" + client.Name)
 			outMsg := RawMessage{
 				To:       client.ID,
@@ -179,8 +178,8 @@ func handleIncomingMessage(rawMsg RawMessage, err error) error {
 	}
 
 	// Determine destination
-	msg, err := parseMessage(rawMsg)
-	receivers := calculateReceivers(&msg, rawMsg.server)
+	msg, err := parseMessage(server, rawMsg)
+	receivers := calculateReceivers(&msg, server)
 
 	if err != nil {
 		outMsg := RawMessage{
@@ -216,12 +215,12 @@ func handleIncomingMessage(rawMsg RawMessage, err error) error {
 	return nil
 }
 
-func parseMessage(rawMsg RawMessage) (Message, error) {
+func parseMessage(server *ChatServer, rawMsg RawMessage) (Message, error) {
 	var to *Client
 	var parseError error
 	if rawMsg.err == nil {
 		parseError = nil
-		to = findClient(rawMsg.server, rawMsg.To)
+		to = server.findClient(rawMsg.To)
 
 	} else {
 		// Could not determine destination
