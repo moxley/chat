@@ -1,9 +1,7 @@
 package chatserver
 
-// ClientsRegistry A thread-safe map of ID->Client pairs
 import (
 	"fmt"
-	"sync"
 
 	"github.com/nu7hatch/gouuid"
 
@@ -17,29 +15,22 @@ type Client struct {
 	Name string
 }
 
-// ClientsRegistry keeps the client list
-type ClientsRegistry struct {
-	sync.RWMutex
-	m map[string]*Client
-}
-
 // ChatServer server context
 type ChatServer struct {
-	// Clients map[string]*Client
-	Clients ClientsRegistry
+	clients map[string]*Client
 }
 
 // New constructs a ChatServer
 func New() *ChatServer {
 	server := ChatServer{}
-	server.Clients.m = make(map[string]*Client)
+	server.clients = make(map[string]*Client)
 	return &server
 }
 
-func (registry *ClientsRegistry) asArray(resultChan chan []*Client) {
-	v := make([]*Client, len(registry.m), len(registry.m))
+func (server *ChatServer) asArray(resultChan chan []*Client) {
+	v := make([]*Client, len(server.clients), len(server.clients))
 	idx := 0
-	for _, value := range registry.m {
+	for _, value := range server.clients {
 		v[idx] = value
 		idx++
 	}
@@ -62,13 +53,13 @@ func createClient(ws *websocket.Conn) *Client {
 // AllClients returns all clients
 func (server *ChatServer) AllClients() []*Client {
 	resultChan := make(chan []*Client)
-	go server.Clients.asArray(resultChan)
+	go server.asArray(resultChan)
 	return <-resultChan
 }
 
 func (server *ChatServer) registerClient(client *Client, resultChan chan bool) {
 	// Register client
-	server.Clients.m[client.ID] = client
+	server.clients[client.ID] = client
 	resultChan <- true
 }
 
@@ -91,7 +82,7 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 // }
 
 func (server *ChatServer) destroyClient(client *Client, ch chan bool) {
-	delete(server.Clients.m, client.ID)
+	delete(server.clients, client.ID)
 	client.Conn.Close()
 	ch <- true
 }
