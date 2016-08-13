@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 
 	"github.com/nu7hatch/gouuid"
 
@@ -16,18 +15,6 @@ type Client struct {
 	ID   string
 	Conn *websocket.Conn
 	Name string
-}
-
-// ClientsRegistry A thread-safe map of ID->Client pairs
-type ClientsRegistry struct {
-	sync.RWMutex
-	m map[string]*Client
-}
-
-// ChatServer server context
-type ChatServer struct {
-	// Clients map[string]*Client
-	Clients ClientsRegistry
 }
 
 // RawMessage unprocessed message
@@ -62,36 +49,6 @@ func createClient(ws *websocket.Conn) *Client {
 	return &client
 }
 
-func (server *ChatServer) registerClient(client *Client) {
-	// Register client
-	server.Clients.Lock()
-	server.Clients.m[client.ID] = client
-	server.Clients.Unlock()
-}
-
-func (server *ChatServer) createAndRegisterClient(ws *websocket.Conn) *Client {
-	client := createClient(ws)
-	server.registerClient(client)
-
-	fmt.Printf("Client connected. ID given: %v\n", client.ID)
-
-	return client
-}
-
-func (server *ChatServer) findClient(id string) *Client {
-	server.Clients.RLock()
-	fetchedClient := server.Clients.m[id]
-	server.Clients.RUnlock()
-	return fetchedClient
-}
-
-func (server *ChatServer) destroyClient(client *Client) {
-	server.Clients.Lock()
-	delete(server.Clients.m, client.ID)
-	server.Clients.Unlock()
-	client.Conn.Close()
-}
-
 func clientHandler(ws *websocket.Conn, server *ChatServer) {
 	client := server.createAndRegisterClient(ws)
 	for {
@@ -103,22 +60,6 @@ func clientHandler(ws *websocket.Conn, server *ChatServer) {
 			break
 		}
 	}
-}
-
-func (registry *ClientsRegistry) asArray() []*Client {
-	registry.RLock()
-	v := make([]*Client, len(registry.m), len(registry.m))
-	idx := 0
-	for _, value := range registry.m {
-		v[idx] = value
-		idx++
-	}
-	registry.RUnlock()
-	return v
-}
-
-func (server *ChatServer) allClients() []*Client {
-	return server.Clients.asArray()
 }
 
 func allClientsExceptID(server *ChatServer, id string) []*Client {
@@ -246,14 +187,13 @@ func listen() int {
 	return 0
 }
 
-func createChatHandler() websocket.Handler {
-	server := ChatServer{}
-	server.Clients.m = make(map[string]*Client)
-	return makeHandler(&server)
+func createChatHandler(server *ChatServer) websocket.Handler {
+	return makeHandler(server)
 }
 
 func main() {
-	chatHandler := createChatHandler()
+	server := chatserver.New()
+	chatHandler := createChatHandler(server)
 
 	http.Handle("/echo", websocket.Handler(chatHandler))
 	http.Handle("/", http.FileServer(http.Dir("webroot")))
