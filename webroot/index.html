@@ -67,79 +67,114 @@
         <script   src="https://code.jquery.com/jquery-2.2.4.min.js"   integrity="sha256-BbhdlvQf/xTY9gja0Dq3HiwQF8LaCRTXxZKRutelT44="   crossorigin="anonymous"></script>
 
         <script>
-          function handleSendMessage(selector, ws) {
-              var data = $('.compose-input', selector).val();
-              $('.compose-input', selector).val('');
-              var to = 'all';
-              var msg = {to: to, data: data}
-              ws.send(JSON.stringify(msg));
-              console.log("sending:", msg);
-          }
-          function onMessage(e, ws, $ul) {
-              var data = JSON.parse(event.data)
-              console.log("received:", data);
-              var $from = $('<span class="from-line">');
-              $from.
-                  append($('<img src="speech-bubble.svg" alt="Speech bubble icon" class="from-icon">')).
-                  append($('<span class="from-text">').text(data.fromName))
-              var $messageBody = $('<span>').addClass('message-body');
-              $messageBody.text(data.data);
-              $('<li>').
-                  append($from).
-                  append($messageBody).
-                  appendTo($ul);
-              $ul[0].scrollTop = $ul[0].scrollHeight;
-          }
-          function buildClient(userName, selector) {
-              return function() {
-                  var ws = new WebSocket("ws://localhost:8080/echo");
-                  ws.onopen = function() {
-                      console.log("Connected. Registering...");
+            var Client = function(view) {
+                var client = {
+                    view: view,
+                    ws: null,
+                    userName: null
+                };
+                return client;
+            };
 
-                      // Register
-                      var msg = {action: 'set-name', data: userName};
-                      ws.send(JSON.stringify(msg));
+            function handleSendMessage(client) {
+                var $ui = client.view.$messagingUI;
+                var data = $('.compose-input', $ui).val();
+                $('.compose-input', $ui).val('');
+                var to = 'all';
+                var msg = {to: to, data: data}
+                client.ws.send(JSON.stringify(msg));
+                console.log("sending:", msg);
+            }
+            function onMessage(event, client, $ul) {
+                var data = JSON.parse(event.data)
+                console.log("received:", data);
+                var $from = $('<span class="from-line">');
+                $from.
+                    append($('<img src="speech-bubble.svg" alt="Speech bubble icon" class="from-icon">')).
+                    append($('<span class="from-text">').text(data.fromName))
+                var $messageBody = $('<span>').addClass('message-body');
+                $messageBody.text(data.data);
+                $('<li>').
+                    append($from).
+                    append($messageBody).
+                    appendTo($ul);
+                $ul[0].scrollTop = $ul[0].scrollHeight;
+            }
+            function buildClient(client) {
+                var $ui = client.view.$messagingUI;
 
-                      var $ul = $('.msg-list', selector);
-                      console.log("$ul:", $ul);
-                      ws.onmessage = function(e) {
-                          onMessage(e, ws, $ul);
-                      }
-                      $('.compose-input', selector).
-                          keypress(function(e) {
-                              if(e.which == 13) {
-                                  handleSendMessage(selector, ws);
-                              }
-                          }).
-                          focus();
-                  }
-              }
-          }
-          function handleRegister(selector) {
-              var userName = $('.name-input', selector).val().trim();
-              if (userName.length == 0) {
-                  alert("Please choose a name");
-                  return;
-              }
+                return function() {
+                    client.ws = new WebSocket("ws://localhost:8080/echo");
+                    client.ws.onopen = function() {
+                        console.log("Connected. Registering...");
 
-              $(selector).addClass('hidden');
-              $('#client').removeClass('hidden');
-              $(buildClient(userName, "#client"));
-          }
-          function buildRegistration(selector) {
-              console.log("name-input:", $('.name-input', selector));
-              $('.name-input', selector).
-                  keypress(function(e) {
-                      if(e.which == 13) {
-                          handleRegister(selector);
-                      }
-                  }).
-                  focus();
-          }
+                        // Register
+                        var msg = {action: 'set-name', data: client.userName};
+                        client.ws.send(JSON.stringify(msg));
 
-          $(document).ready(function() {
-              buildRegistration('#registration');
-          });
+                        var $ul = $('.msg-list', $ui);
+                        client.ws.onmessage = function(e) {
+                            onMessage(e, client, $ul);
+                        }
+                        $('.compose-input', $ui).
+                            keypress(function(e) {
+                                if(e.which == 13) {
+                                    handleSendMessage(client);
+                                }
+                            }).
+                            focus();
+                    }
+                }
+            }
+            function handleRegister(client) {
+                var $ui = client.view.$registrationUI;
+                var userName = $('.name-input', $ui).val().trim();
+                if (userName.length == 0) {
+                    alert("Please choose a name");
+                    return;
+                }
+                client.userName = userName;
+
+                $($ui).addClass('hidden');
+                $('#client').removeClass('hidden');
+
+                $(buildClient(client));
+            }
+            function buildRegistration(client) {
+                var $ui = client.view.$registrationUI;
+                console.log("name-input:", $('.name-input', $ui));
+                $('.name-input', $ui).
+                    keypress(function(e) {
+                        if(e.which == 13) {
+                            handleRegister(client);
+                        }
+                    }).
+                    focus();
+            }
+
+            // Send a stream of messages to test the server's ability to
+            // handle concurrent requests
+            function ddos(i) {
+                var client = ChatApp.client,
+                    $ui = client.view.$messagingUI;
+                if (i === undefined || i === null) {
+                  i = 0;
+                }
+                $('.compose-input', $ui).val(i);
+                handleSendMessage(client);
+                setTimeout(function() {
+                    ddos(i + 1);
+                }, 0);
+            }
+
+            var ChatApp = {};
+            $(document).ready(function() {
+                ChatApp.client = new Client({
+                    $registrationUI: '#registration',
+                    $messagingUI: '#client'
+                });
+                buildRegistration(ChatApp.client);
+            });
         </script>
     </head>
     <body>
