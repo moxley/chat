@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/nu7hatch/gouuid"
 
@@ -17,9 +18,16 @@ type Client struct {
 	Name string
 }
 
+// ClientsRegistry A thread-safe map of ID->Client pairs
+type ClientsRegistry struct {
+	sync.RWMutex
+	m map[string]*Client
+}
+
 // ChatServer server context
 type ChatServer struct {
-	Clients map[string]*Client
+	// Clients map[string]*Client
+	Clients ClientsRegistry
 }
 
 // RawMessage unprocessed message
@@ -51,18 +59,42 @@ func createClient(ws *websocket.Conn, server *ChatServer) *Client {
 	id := u.String()
 
 	client := Client{ID: id, Conn: ws}
-	fmt.Printf("Client connected. ID given: %v\n", client.ID)
-	server.Clients[client.ID] = &client
+
 	return &client
 }
 
+func registerClient(server *ChatServer, client *Client) {
+	// Register client
+	server.Clients.Lock()
+	server.Clients.m[client.ID] = client
+	server.Clients.Unlock()
+}
+
+func createAndRegisterClient(ws *websocket.Conn, server *ChatServer) *Client {
+	client := createClient(ws, server)
+	registerClient(server, client)
+
+	fmt.Printf("Client connected. ID given: %v\n", client.ID)
+
+	return client
+}
+
+func findClient(server *ChatServer, id string) *Client {
+	server.Clients.RLock()
+	fetchedClient := server.Clients.m[id]
+	server.Clients.RUnlock()
+	return fetchedClient
+}
+
 func destroyClient(client *Client, server *ChatServer) {
-	delete(server.Clients, client.ID)
+	server.Clients.Lock()
+	delete(server.Clients.m, client.ID)
+	server.Clients.Unlock()
 	client.Conn.Close()
 }
 
 func clientHandler(ws *websocket.Conn, server *ChatServer) {
-	client := createClient(ws, server)
+	client := createAndRegisterClient(ws, server)
 	for {
 		rawMsg := RawMessage{client: client, server: server}
 		err := websocket.JSON.Receive(client.Conn, &rawMsg)
@@ -74,23 +106,25 @@ func clientHandler(ws *websocket.Conn, server *ChatServer) {
 	}
 }
 
-func clientsAsArray(clients map[string]*Client) []*Client {
-	v := make([]*Client, len(clients), len(clients))
+func clientsAsArray(registry *ClientsRegistry) []*Client {
+	registry.RLock()
+	v := make([]*Client, len(registry.m), len(registry.m))
 	idx := 0
-	for _, value := range clients {
+	for _, value := range registry.m {
 		v[idx] = value
 		idx++
 	}
+	registry.RUnlock()
 	return v
 }
 
 func allClients(server *ChatServer) []*Client {
-	return clientsAsArray(server.Clients)
+	return clientsAsArray(&server.Clients)
 }
 
 func allClientsExceptID(server *ChatServer, id string) []*Client {
 	var chosenClients []*Client
-	for _, client := range clientsAsArray(server.Clients) {
+	for _, client := range clientsAsArray(&server.Clients) {
 		if client.ID != id {
 			chosenClients = append(chosenClients, client)
 		}
@@ -187,7 +221,8 @@ func parseMessage(rawMsg RawMessage) (Message, error) {
 	var parseError error
 	if rawMsg.err == nil {
 		parseError = nil
-		to = rawMsg.server.Clients[rawMsg.To]
+		to = findClient(rawMsg.server, rawMsg.To)
+
 	} else {
 		// Could not determine destination
 		parseError = errors.New("Could not determine message destination")
@@ -214,7 +249,7 @@ func listen() int {
 
 func createChatHandler() websocket.Handler {
 	server := ChatServer{}
-	server.Clients = make(map[string]*Client)
+	server.Clients.m = make(map[string]*Client)
 	return makeHandler(&server)
 }
 
