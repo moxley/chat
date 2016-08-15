@@ -164,12 +164,6 @@ func parseMessage(server *chatserver.ChatServer, frame chatserver.Frame) (*Messa
 	return &msg, parseError
 }
 
-func makeHandler(server *chatserver.ChatServer) websocket.Handler {
-	return func(ws *websocket.Conn) {
-		clientHandler(ws, server)
-	}
-}
-
 func listen() error {
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
@@ -179,13 +173,11 @@ func listen() error {
 	return err
 }
 
-func createChatHandler(server *chatserver.ChatServer) websocket.Handler {
-	return makeHandler(server)
-}
-
 func main() {
 	server := chatserver.NewServer()
-	chatHandler := createChatHandler(server)
+	chatHandler := func(ws *websocket.Conn) {
+		clientHandler(ws, server)
+	}
 
 	http.Handle("/echo", websocket.Handler(chatHandler))
 	http.Handle("/", http.FileServer(http.Dir("webroot")))
