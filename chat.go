@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	chatserver "github.com/moxley/chat/chatserver"
@@ -129,7 +130,12 @@ func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame)
 
 func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame, err error) error {
 	if err != nil {
-		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", frame.FromClient.ID)
+		if err == io.EOF {
+			fmt.Printf("Client closed connection (client.ID=%v): %v\n", frame.FromClient.ID, err)
+		} else {
+			fmt.Printf("Error on receving socket (client.ID=%v): %v\n", frame.FromClient.ID, err)
+		}
+		fmt.Printf("Destroying client and connection.\n")
 		server.DestroyClient(frame.FromClient)
 		return errors.New("Client failed")
 	}
@@ -164,13 +170,13 @@ func makeHandler(server *chatserver.ChatServer) websocket.Handler {
 	}
 }
 
-func listen() int {
+func listen() error {
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
 		fmt.Println("ListenAndServe: " + err.Error())
-		return 1
+		return err
 	}
-	return 0
+	return err
 }
 
 func createChatHandler(server *chatserver.ChatServer) websocket.Handler {
@@ -185,9 +191,9 @@ func main() {
 	http.Handle("/", http.FileServer(http.Dir("webroot")))
 	fmt.Println("Starting server on port 8080")
 
-	res := listen()
+	err := listen()
 
-	if res != 0 {
+	if err != nil {
 		fmt.Println("Ending server on failure")
 	} else {
 		fmt.Println("Clean shutdown")
