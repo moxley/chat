@@ -15,26 +15,41 @@ type Client struct {
 	Name string
 }
 
+// ClientRegistry is a registry of clients
+type ClientRegistry struct {
+	clients     map[string]*Client
+	accessQueue chan func(map[string]*Client)
+}
+
 // ChatServer server context
 type ChatServer struct {
-	clients map[string]*Client
+	clients *ClientRegistry
 }
 
 // New constructs a ChatServer
 func New() *ChatServer {
 	server := ChatServer{}
-	server.clients = make(map[string]*Client)
+	server.clients = &ClientRegistry{
+		clients:     make(map[string]*Client),
+		accessQueue: make(chan func(map[string]*Client)),
+	}
+	go server.clients.handleRegistryAccess()
 	return &server
 }
 
-func (server *ChatServer) asArray(resultChan chan []*Client) {
-	v := make([]*Client, len(server.clients), len(server.clients))
-	idx := 0
-	for _, value := range server.clients {
-		v[idx] = value
-		idx++
+// AsArray returns the entire client list as an array
+func (registry *ClientRegistry) AsArray() []*Client {
+	resultChan := make(chan []*Client)
+	registry.accessQueue <- func(clients map[string]*Client) {
+		v := make([]*Client, len(clients), len(clients))
+		idx := 0
+		for _, value := range clients {
+			v[idx] = value
+			idx++
+		}
+		resultChan <- v
 	}
-	resultChan <- v
+	return <-resultChan
 }
 
 func createClient(ws *websocket.Conn) *Client {
@@ -52,23 +67,23 @@ func createClient(ws *websocket.Conn) *Client {
 
 // AllClients returns all clients
 func (server *ChatServer) AllClients() []*Client {
-	resultChan := make(chan []*Client)
-	go server.asArray(resultChan)
-	return <-resultChan
+	return server.clients.AsArray()
 }
 
-func (server *ChatServer) registerClient(client *Client, resultChan chan bool) {
-	// Register client
-	server.clients[client.ID] = client
-	resultChan <- true
+// Register registers a client
+func (registry *ClientRegistry) Register(client *Client) {
+	resultChan := make(chan bool)
+	registry.accessQueue <- func(clients map[string]*Client) {
+		registry.clients[client.ID] = client
+		resultChan <- true
+	}
+	<-resultChan
 }
 
 // CreateAndRegisterClient creates and registers a client
 func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 	client := createClient(ws)
-	resultChan := make(chan bool)
-	go server.registerClient(client, resultChan)
-	<-resultChan
+	server.clients.Register(client)
 
 	fmt.Printf("Client connected. ID given: %v\n", client.ID)
 
@@ -81,16 +96,17 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 // 	resultChan <- fetchedClient
 // }
 
-// Merge back into DestroyClient, as an anonymous function
-func (server *ChatServer) destroyClient(client *Client, ch chan bool) {
-	delete(server.clients, client.ID)
-	client.Conn.Close()
-	ch <- true
+func (registry *ClientRegistry) handleRegistryAccess() {
+	for f := range registry.accessQueue {
+		f(registry.clients)
+	}
 }
 
 // DestroyClient removes a client from the registry
 func (server *ChatServer) DestroyClient(client *Client) {
-	ch := make(chan bool)
-	go server.destroyClient(client, ch)
-	<-ch
+	server.clients.accessQueue <- func(clients map[string]*Client) {
+		fmt.Printf("Removing client from registry: %v\n", client)
+		delete(clients, client.ID)
+	}
+	client.Conn.Close()
 }
