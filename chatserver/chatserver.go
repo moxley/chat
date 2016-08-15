@@ -81,6 +81,7 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 // 	resultChan <- fetchedClient
 // }
 
+// Merge back into DestroyClient, as an anonymous function
 func (server *ChatServer) destroyClient(client *Client, ch chan bool) {
 	delete(server.clients, client.ID)
 	client.Conn.Close()
