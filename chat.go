@@ -6,25 +6,15 @@ import (
 	"net/http"
 
 	chatserver "github.com/moxley/chat/chatserver"
+	"github.com/moxley/chat/client"
 	"golang.org/x/net/websocket"
 )
-
-// Frame is an incoming or outgoing Frame
-type Frame struct {
-	err      error
-	From     string `json:"from"`
-	FromName string `json:"fromName"`
-	To       string `json:"to"`
-	Data     string `json:"data"`
-	Action   string `json:"action"`
-	client   *chatserver.Client
-}
 
 // Message a message
 type Message struct {
 	Body  string
-	From  *chatserver.Client
-	To    *chatserver.Client
+	From  *client.Client
+	To    *client.Client
 	ToStr string
 }
 
@@ -38,109 +28,124 @@ func clientHandler(ws *websocket.Conn, server *chatserver.ChatServer) {
 	}
 }
 
-func receiveFrame(client *chatserver.Client, server *chatserver.ChatServer) error {
-	frame := Frame{client: client}
-	err := websocket.JSON.Receive(client.Conn, &frame)
+func receiveFrame(cli *client.Client, server *chatserver.ChatServer) error {
+	frame := chatserver.Frame{FromClient: cli}
+	err := websocket.JSON.Receive(cli.Conn, &frame)
 	fmt.Println("Incoming message")
 	return handleIncomingMessage(server, frame, err)
 }
 
-func allClientsExceptID(server *chatserver.ChatServer, id string) []*chatserver.Client {
-	var chosenClients []*chatserver.Client
-	for _, client := range server.AllClients() {
-		if client.ID != id {
-			chosenClients = append(chosenClients, client)
+func allClientsExceptID(server *chatserver.ChatServer, id string) []*client.Client {
+	var chosenClients []*client.Client
+	for _, cli := range server.AllClients() {
+		if cli.ID != id {
+			chosenClients = append(chosenClients, cli)
 		}
 	}
 	return chosenClients
 }
 
-func calculateReceivers(msg *Message, server *chatserver.ChatServer) []*chatserver.Client {
+func calculateReceivers(msg *Message, server *chatserver.ChatServer) []*client.Client {
 	if msg.ToStr == "all" {
 		return server.AllClients()
 	} else if msg.To == nil {
-		return []*chatserver.Client{}
+		return []*client.Client{}
 	}
-	return []*chatserver.Client{msg.To}
+	return []*client.Client{msg.To}
 }
 
-func handleIncomingMessage(server *chatserver.ChatServer, frame Frame, err error) error {
-	if err != nil {
-		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", frame.client.ID)
-		server.DestroyClient(frame.client)
-		return errors.New("Client failed")
+func handleSetName(server *chatserver.ChatServer, frame chatserver.Frame) error {
+	frame.FromClient.Name = frame.Data
+	outMsg := chatserver.Frame{
+		To:       frame.FromClient.ID,
+		FromName: "auto-reply",
+		Data:     "Welcome " + frame.FromClient.Name,
 	}
-
-	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", frame.client.ID, frame.To, frame.Data)
-
-	if frame.Action == "set-name" {
-		frame.client.Name = frame.Data
-		outMsg := Frame{
-			To:       frame.client.ID,
+	err := websocket.JSON.Send(frame.FromClient.Conn, &outMsg)
+	if err != nil {
+		fmt.Println("Failed to send message: " + err.Error())
+		return err
+	}
+	for _, cli := range allClientsExceptID(server, frame.FromClient.ID) {
+		fmt.Println("Sending new user notification to client name=" + cli.Name)
+		outMsg := chatserver.Frame{
+			To:       cli.ID,
 			FromName: "auto-reply",
-			Data:     "Welcome " + frame.client.Name,
+			Data:     frame.FromClient.Name + " has joined",
 		}
-		err = websocket.JSON.Send(frame.client.Conn, &outMsg)
+		err = websocket.JSON.Send(cli.Conn, &outMsg)
 		if err != nil {
 			fmt.Println("Failed to send message: " + err.Error())
 			return err
 		}
-		for _, client := range allClientsExceptID(server, frame.client.ID) {
-			fmt.Println("Sending new user notification to client name=" + client.Name)
-			outMsg := Frame{
-				To:       client.ID,
-				FromName: "auto-reply",
-				Data:     frame.client.Name + " has joined",
-			}
-			err = websocket.JSON.Send(client.Conn, &outMsg)
-			if err != nil {
-				fmt.Println("Failed to send message: " + err.Error())
-				return err
-			}
-		}
-		return err
 	}
+	return err
+}
 
+func sendSystemMessage(to *client.Client, msg string) error {
+	msgFrame := &chatserver.Frame{
+		ToClient: to,
+		To:       to.ID,
+		FromName: "auto-reply",
+		Data:     msg,
+	}
+	return msgFrame.Send()
+}
+
+func sendRegularMessage(from *client.Client, to *client.Client, msg string) error {
+	fmt.Printf("Sending regular message: %v\n", msg)
+	msgFrame := &chatserver.Frame{
+		From:       from.ID,
+		FromClient: from,
+		FromName:   from.Name,
+		ToClient:   to,
+		To:         to.ID,
+		Data:       msg,
+	}
+	return msgFrame.Send()
+}
+
+func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame) error {
 	// Determine destination
 	msg, err := parseMessage(server, frame)
 
 	if err != nil {
-		outMsg := Frame{
-			To:       frame.client.ID,
-			FromName: "auto-reply",
-			Data:     "Error: invalid message format",
-		}
-		err := websocket.JSON.Send(frame.client.Conn, &outMsg)
-		if err != nil {
-			fmt.Println("Failed to send message: " + err.Error())
-			return err
-		}
+		return sendSystemMessage(frame.FromClient, "Error: invalid message format")
+	}
+
+	receivers := calculateReceivers(msg, server)
+	if len(receivers) == 0 {
+		fmt.Printf("No receiver found for id=%v\n", frame.To)
 	} else {
-		receivers := calculateReceivers(msg, server)
-		if len(receivers) == 0 {
-			fmt.Printf("No receiver found for id=%v\n", frame.To)
-		} else {
-			for _, recip := range receivers {
-				fmt.Printf("Sending Message: %v\n", msg)
-				outMsg := Frame{
-					From:     frame.client.ID,
-					FromName: frame.client.Name,
-					To:       recip.ID,
-					Data:     msg.Body,
-				}
-				err := websocket.JSON.Send(recip.Conn, &outMsg)
-				if err != nil {
-					fmt.Println("Failed to send message: " + err.Error())
-					return err
-				}
+		for _, recip := range receivers {
+			err = sendRegularMessage(frame.FromClient, recip, msg.Body)
+			if err != nil {
+				return err
 			}
 		}
 	}
 	return nil
 }
 
-func parseMessage(server *chatserver.ChatServer, frame Frame) (*Message, error) {
-	var to *chatserver.Client
+func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame, err error) error {
+	if err != nil {
+		fmt.Printf("Error on receving socket (client.ID=%v). Destroying client and connection.\n", frame.FromClient.ID)
+		server.DestroyClient(frame.FromClient)
+		return errors.New("Client failed")
+	}
+
+	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
+
+	if frame.Action == "set-name" {
+		err = handleSetName(server, frame)
+	} else {
+		err = handleRegularMessage(server, frame)
+	}
+	return err
+}
+
+func parseMessage(server *chatserver.ChatServer, frame chatserver.Frame) (*Message, error) {
+	var to *client.Client
 	var parseError error
 
 	// TODO Better validation
@@ -149,7 +154,7 @@ func parseMessage(server *chatserver.ChatServer, frame Frame) (*Message, error) 
 		to = nil
 	}
 
-	msg := Message{Body: frame.Data, From: frame.client, To: to, ToStr: frame.To}
+	msg := Message{Body: frame.Data, From: frame.FromClient, To: to, ToStr: frame.To}
 	return &msg, parseError
 }
 
