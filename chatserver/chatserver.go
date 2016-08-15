@@ -15,41 +15,16 @@ type Client struct {
 	Name string
 }
 
-// ClientRegistry is a registry of clients
-type ClientRegistry struct {
-	clients     map[string]*Client
-	accessQueue chan func(map[string]*Client)
-}
-
 // ChatServer server context
 type ChatServer struct {
 	clients *ClientRegistry
 }
 
-// New constructs a ChatServer
-func New() *ChatServer {
+// NewServer constructs a ChatServer
+func NewServer() *ChatServer {
 	server := ChatServer{}
-	server.clients = &ClientRegistry{
-		clients:     make(map[string]*Client),
-		accessQueue: make(chan func(map[string]*Client)),
-	}
-	go server.clients.handleRegistryAccess()
+	server.clients = NewClientRegistry()
 	return &server
-}
-
-// AsArray returns the entire client list as an array
-func (registry *ClientRegistry) AsArray() []*Client {
-	resultChan := make(chan []*Client)
-	registry.accessQueue <- func(clients map[string]*Client) {
-		v := make([]*Client, len(clients), len(clients))
-		idx := 0
-		for _, value := range clients {
-			v[idx] = value
-			idx++
-		}
-		resultChan <- v
-	}
-	return <-resultChan
 }
 
 func createClient(ws *websocket.Conn) *Client {
@@ -70,16 +45,6 @@ func (server *ChatServer) AllClients() []*Client {
 	return server.clients.AsArray()
 }
 
-// Register registers a client
-func (registry *ClientRegistry) Register(client *Client) {
-	resultChan := make(chan bool)
-	registry.accessQueue <- func(clients map[string]*Client) {
-		registry.clients[client.ID] = client
-		resultChan <- true
-	}
-	<-resultChan
-}
-
 // CreateAndRegisterClient creates and registers a client
 func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 	client := createClient(ws)
@@ -88,18 +53,6 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 	fmt.Printf("Client connected. ID given: %v\n", client.ID)
 
 	return client
-}
-
-// FindClient finds a client by ID
-// func (server *ChatServer) FindClient(id string, resultChan chan *Client) *Client {
-// 	fetchedClient := server.Clients.m[id]
-// 	resultChan <- fetchedClient
-// }
-
-func (registry *ClientRegistry) handleRegistryAccess() {
-	for f := range registry.accessQueue {
-		f(registry.clients)
-	}
 }
 
 // DestroyClient removes a client from the registry

@@ -173,7 +173,7 @@ func createChatHandler(server *chatserver.ChatServer) websocket.Handler {
 }
 
 func main() {
-	server := chatserver.New()
+	server := chatserver.NewServer()
 	chatHandler := createChatHandler(server)
 
 	http.Handle("/echo", websocket.Handler(chatHandler))
