@@ -26,6 +26,7 @@ func process(r *Request) {
 
 func handle(index int, queue chan *Request) {
 	for r := range queue {
+		r := r
 		fmt.Printf("[%d] BEGIN request: %v\n", index, r)
 		process(r)
 		fmt.Printf("[%d] END request: %v\n", index, r)
@@ -35,8 +36,10 @@ func handle(index int, queue chan *Request) {
 
 // Serve serves a request
 func Serve(clientRequests chan *Request, quit chan bool) {
+	// Create two request workers
 	go handle(0, clientRequests)
 	go handle(1, clientRequests)
+
 	<-quit
 }
 
