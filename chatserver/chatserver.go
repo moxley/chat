@@ -1,7 +1,8 @@
 package chatserver
 
 import (
-	"fmt"
+	"log"
+	"os"
 
 	"github.com/moxley/chat/client"
 	"github.com/nu7hatch/gouuid"
@@ -12,6 +13,15 @@ import (
 // ChatServer server context
 type ChatServer struct {
 	clients *ClientRegistry
+	quit    chan bool
+	Config  *Config
+	Logger  *log.Logger
+}
+
+// Config is used to configure ChatServer
+type Config struct {
+	Port   int
+	Logger *log.Logger
 }
 
 // Frame is an incoming or outgoing Frame
@@ -27,9 +37,20 @@ type Frame struct {
 }
 
 // NewServer constructs a ChatServer
-func NewServer() *ChatServer {
+func NewServer(config *Config) *ChatServer {
 	server := ChatServer{}
 	server.clients = NewClientRegistry()
+	server.quit = make(chan bool)
+	if config == nil {
+		server.Config = &Config{Port: 8080}
+	} else {
+		server.Config = config
+	}
+	if server.Config.Logger == nil {
+		server.Logger = log.New(os.Stdout, "ChatServer: ", log.Lshortfile)
+	} else {
+		server.Logger = server.Config.Logger
+	}
 	return &server
 }
 
@@ -56,7 +77,7 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *client.Cl
 	client := createClient(ws)
 	server.clients.Register(client)
 
-	fmt.Printf("Client connected. ID given: %v\n", client.ID)
+	server.Logger.Printf("Client connected. ID given: %v\n", client.ID)
 
 	return client
 }
@@ -64,17 +85,17 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *client.Cl
 // DestroyClient removes a client from the registry
 func (server *ChatServer) DestroyClient(c *client.Client) {
 	server.clients.accessQueue <- func(clients map[string]*client.Client) {
-		fmt.Printf("Removing client from registry: %v\n", c)
+		server.Logger.Printf("Removing client from registry: %v\n", c)
 		delete(clients, c.ID)
 	}
 	c.Conn.Close()
 }
 
 // Send sends a message to a client
-func (msg *Frame) Send() error {
+func (msg *Frame) Send(server *ChatServer) error {
 	err := websocket.JSON.Send(msg.ToClient.Conn, &msg)
 	if err != nil {
-		fmt.Println("Failed to send message: " + err.Error())
+		server.Logger.Println("Failed to send message: " + err.Error())
 		return err
 	}
 	return nil

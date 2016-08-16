@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 
-	chatserver "github.com/moxley/chat/chatserver"
+	"github.com/moxley/chat/chatserver"
 	"github.com/moxley/chat/client"
 	"golang.org/x/net/websocket"
 )
@@ -32,7 +33,7 @@ func clientHandler(ws *websocket.Conn, server *chatserver.ChatServer) {
 func receiveFrame(cli *client.Client, server *chatserver.ChatServer) error {
 	frame := chatserver.Frame{FromClient: cli}
 	err := websocket.JSON.Receive(cli.Conn, &frame)
-	fmt.Println("Incoming message")
+	server.Logger.Println("Incoming message")
 	return handleIncomingMessage(server, frame, err)
 }
 
@@ -64,11 +65,11 @@ func handleSetName(server *chatserver.ChatServer, frame chatserver.Frame) error 
 	}
 	err := websocket.JSON.Send(frame.FromClient.Conn, &outMsg)
 	if err != nil {
-		fmt.Println("Failed to send message: " + err.Error())
+		server.Logger.Println("Failed to send message: " + err.Error())
 		return err
 	}
 	for _, cli := range allClientsExceptID(server, frame.FromClient.ID) {
-		fmt.Println("Sending new user notification to client name=" + cli.Name)
+		server.Logger.Println("Sending new user notification to client name=" + cli.Name)
 		outMsg := chatserver.Frame{
 			To:       cli.ID,
 			FromName: "auto-reply",
@@ -76,25 +77,25 @@ func handleSetName(server *chatserver.ChatServer, frame chatserver.Frame) error 
 		}
 		err = websocket.JSON.Send(cli.Conn, &outMsg)
 		if err != nil {
-			fmt.Println("Failed to send message: " + err.Error())
+			server.Logger.Println("Failed to send message: " + err.Error())
 			return err
 		}
 	}
 	return err
 }
 
-func sendSystemMessage(to *client.Client, msg string) error {
+func sendSystemMessage(server *chatserver.ChatServer, to *client.Client, msg string) error {
 	msgFrame := &chatserver.Frame{
 		ToClient: to,
 		To:       to.ID,
 		FromName: "auto-reply",
 		Data:     msg,
 	}
-	return msgFrame.Send()
+	return msgFrame.Send(server)
 }
 
-func sendRegularMessage(from *client.Client, to *client.Client, msg string) error {
-	fmt.Printf("Sending regular message: %v\n", msg)
+func sendRegularMessage(server *chatserver.ChatServer, from *client.Client, to *client.Client, msg string) error {
+	server.Logger.Printf("Sending regular message: %v\n", msg)
 	msgFrame := &chatserver.Frame{
 		From:       from.ID,
 		FromClient: from,
@@ -103,7 +104,7 @@ func sendRegularMessage(from *client.Client, to *client.Client, msg string) erro
 		To:         to.ID,
 		Data:       msg,
 	}
-	return msgFrame.Send()
+	return msgFrame.Send(server)
 }
 
 func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame) error {
@@ -111,15 +112,15 @@ func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame)
 	msg, err := parseMessage(server, frame)
 
 	if err != nil {
-		return sendSystemMessage(frame.FromClient, "Error: invalid message format")
+		return sendSystemMessage(server, frame.FromClient, "Error: invalid message format")
 	}
 
 	receivers := calculateReceivers(msg, server)
 	if len(receivers) == 0 {
-		fmt.Printf("No receiver found for id=%v\n", frame.To)
+		server.Logger.Printf("No receiver found for id=%v\n", frame.To)
 	} else {
 		for _, recip := range receivers {
-			err = sendRegularMessage(frame.FromClient, recip, msg.Body)
+			err = sendRegularMessage(server, frame.FromClient, recip, msg.Body)
 			if err != nil {
 				return err
 			}
@@ -131,16 +132,16 @@ func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame)
 func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame, err error) error {
 	if err != nil {
 		if err == io.EOF {
-			fmt.Printf("Client closed connection (client.ID=%v): %v\n", frame.FromClient.ID, err)
+			server.Logger.Printf("Client closed connection (client.ID=%v): %v\n", frame.FromClient.ID, err)
 		} else {
-			fmt.Printf("Error on receving socket (client.ID=%v): %v\n", frame.FromClient.ID, err)
+			server.Logger.Printf("Error on receving socket (client.ID=%v): %v\n", frame.FromClient.ID, err)
 		}
-		fmt.Printf("Destroying client and connection.\n")
+		server.Logger.Printf("Destroying client and connection.\n")
 		server.DestroyClient(frame.FromClient)
 		return errors.New("Client failed")
 	}
 
-	fmt.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
+	server.Logger.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
 
 	if frame.Action == "set-name" {
 		err = handleSetName(server, frame)
@@ -164,30 +165,48 @@ func parseMessage(server *chatserver.ChatServer, frame chatserver.Frame) (*Messa
 	return &msg, parseError
 }
 
-func listen() error {
-	err := http.ListenAndServe(":8080", nil)
+func listen(server *chatserver.ChatServer, port int, finished chan bool) (net.Listener, error) {
+	portStr := fmt.Sprintf(":%d", port)
+	listener, err := net.Listen("tcp", portStr)
 	if err != nil {
-		fmt.Println("ListenAndServe: " + err.Error())
-		return err
+		server.Logger.Printf("Failed to listen on port %v\n", port)
+	} else {
+		go func() {
+			err = http.Serve(listener, nil)
+			if err != nil {
+				server.Logger.Println("ListenAndServe: " + err.Error())
+			}
+			finished <- true
+		}()
 	}
-	return err
+	return listener, err
 }
 
-func main() {
-	server := chatserver.NewServer()
+// StartServer starts the chat server
+func StartServer(server *chatserver.ChatServer) (chan bool, net.Listener, error) {
 	chatHandler := func(ws *websocket.Conn) {
 		clientHandler(ws, server)
 	}
 
 	http.Handle("/echo", websocket.Handler(chatHandler))
 	http.Handle("/", http.FileServer(http.Dir("webroot")))
-	fmt.Println("Starting server on port 8080")
+	server.Logger.Println("Starting server on port 8080...")
 
-	err := listen()
-
+	finished := make(chan bool)
+	listener, err := listen(server, server.Config.Port, finished)
 	if err != nil {
-		fmt.Println("Ending server on failure")
-	} else {
-		fmt.Println("Clean shutdown")
+		server.Logger.Printf("Failed to start server: %v\n", err)
+		return nil, listener, err
 	}
+	server.Logger.Println("Server started")
+	return finished, listener, nil
+}
+
+func main() {
+	server := chatserver.NewServer(nil)
+	finished, _, err := StartServer(server)
+	if err != nil {
+		return
+	}
+	<-finished
 }
