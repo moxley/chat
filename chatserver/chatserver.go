@@ -24,6 +24,15 @@ type Config struct {
 	Logger *log.Logger
 }
 
+// RawFrame Represets the raw data from a frame
+type RawFrame struct {
+	FromID   string `json:"fromID"`
+	FromName string `json:"fromName"`
+	To       string `json:"to"`
+	Data     string `json:"data"`
+	Action   string `json:"action"`
+}
+
 // Frame is an incoming or outgoing Frame
 type Frame struct {
 	err        error
@@ -70,6 +79,11 @@ func createClient(ws *websocket.Conn) *client.Client {
 // AllClients returns all clients
 func (server *ChatServer) AllClients() []*client.Client {
 	return server.clients.AsArray()
+}
+
+// Quit tells the server to stop handling requests
+func (server *ChatServer) Quit() {
+	server.quit <- true
 }
 
 // CreateAndRegisterClient creates and registers a client

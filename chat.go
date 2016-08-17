@@ -31,8 +31,12 @@ func clientHandler(ws *websocket.Conn, server *chatserver.ChatServer) {
 }
 
 func receiveFrame(cli *client.Client, server *chatserver.ChatServer) error {
-	frame := chatserver.Frame{FromClient: cli}
-	err := websocket.JSON.Receive(cli.Conn, &frame)
+	frame := &chatserver.Frame{FromClient: cli}
+	rawFrame := chatserver.RawFrame{}
+	err := websocket.JSON.Receive(cli.Conn, &rawFrame)
+	frame.Data = rawFrame.Data
+	frame.Action = rawFrame.Action
+	frame.To = rawFrame.To
 	server.Logger.Println("Incoming message")
 	return handleIncomingMessage(server, frame, err)
 }
@@ -56,7 +60,7 @@ func calculateReceivers(msg *Message, server *chatserver.ChatServer) []*client.C
 	return []*client.Client{msg.To}
 }
 
-func handleSetName(server *chatserver.ChatServer, frame chatserver.Frame) error {
+func handleSetName(server *chatserver.ChatServer, frame *chatserver.Frame) error {
 	frame.FromClient.Name = frame.Data
 	outMsg := chatserver.Frame{
 		To:       frame.FromClient.ID,
@@ -107,7 +111,7 @@ func sendRegularMessage(server *chatserver.ChatServer, from *client.Client, to *
 	return msgFrame.Send(server)
 }
 
-func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame) error {
+func handleRegularMessage(server *chatserver.ChatServer, frame *chatserver.Frame) error {
 	// Determine destination
 	msg, err := parseMessage(server, frame)
 
@@ -129,7 +133,7 @@ func handleRegularMessage(server *chatserver.ChatServer, frame chatserver.Frame)
 	return nil
 }
 
-func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame, err error) error {
+func handleIncomingMessage(server *chatserver.ChatServer, frame *chatserver.Frame, err error) error {
 	if err != nil {
 		if err == io.EOF {
 			server.Logger.Printf("Client closed connection (client.ID=%v): %v\n", frame.FromClient.ID, err)
@@ -141,7 +145,8 @@ func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame
 		return errors.New("Client failed")
 	}
 
-	server.Logger.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
+	// server.Logger.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
+	server.Logger.Printf("Received message. body: %v\n", frame.Data)
 
 	if frame.Action == "set-name" {
 		err = handleSetName(server, frame)
@@ -151,7 +156,7 @@ func handleIncomingMessage(server *chatserver.ChatServer, frame chatserver.Frame
 	return err
 }
 
-func parseMessage(server *chatserver.ChatServer, frame chatserver.Frame) (*Message, error) {
+func parseMessage(server *chatserver.ChatServer, frame *chatserver.Frame) (*Message, error) {
 	var to *client.Client
 	var parseError error
 
@@ -182,13 +187,23 @@ func listen(server *chatserver.ChatServer, port int, finished chan bool) (net.Li
 	return listener, err
 }
 
-// StartServer starts the chat server
-func StartServer(server *chatserver.ChatServer) (chan bool, net.Listener, error) {
+// NewWebsocketHTTPHandler creates an http handler for the websocket handler
+func NewWebsocketHTTPHandler(server *chatserver.ChatServer) http.Handler {
 	chatHandler := func(ws *websocket.Conn) {
 		clientHandler(ws, server)
 	}
+	return websocket.Handler(chatHandler)
+}
 
-	http.Handle("/echo", websocket.Handler(chatHandler))
+func echoHandler(ws *websocket.Conn) {
+	defer ws.Close()
+	io.Copy(ws, ws)
+}
+
+// StartServer starts the chat server
+func StartServer(server *chatserver.ChatServer) (chan bool, net.Listener, error) {
+	http.Handle("/websocket", NewWebsocketHTTPHandler(server))
+	http.Handle("/echo", websocket.Handler(echoHandler))
 	http.Handle("/", http.FileServer(http.Dir("webroot")))
 	server.Logger.Println("Starting server on port 8080...")
 

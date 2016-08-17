@@ -104,7 +104,7 @@
                 var $ui = client.view.$messagingUI;
 
                 return function() {
-                    client.ws = new WebSocket("ws://localhost:8080/echo");
+                    client.ws = new WebSocket("ws://localhost:8080/websocket");
                     client.ws.onopen = function() {
                         console.log("Connected. Registering...");
 
