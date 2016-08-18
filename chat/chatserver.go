@@ -1,25 +1,24 @@
-package chatserver
+package chat
 
 import (
 	"fmt"
 	"log"
 	"os"
 
-	"github.com/moxley/chat/client"
 	"github.com/nu7hatch/gouuid"
 
 	"golang.org/x/net/websocket"
 )
 
-// ChatServer server context
-type ChatServer struct {
+// Server server context
+type Server struct {
 	clients *ClientRegistry
 	quit    chan bool
 	Config  *Config
 	Logger  *log.Logger
 }
 
-// Config is used to configure ChatServer
+// Config is used to configure Server
 type Config struct {
 	Port   int
 	Logger *log.Logger
@@ -46,17 +45,17 @@ type Frame struct {
 	To         string `json:"to"`
 	Data       string `json:"data"`
 	Action     string `json:"action"`
-	FromClient *client.Client
-	ToClient   *client.Client
+	FromClient *Client
+	ToClient   *Client
 }
 
 func (f *Frame) String() string {
 	return fmt.Sprintf("Frame{Action: %s, To: %s, From: %s, Data: %s}", f.Action, f.To, f.From, f.Data)
 }
 
-// NewServer constructs a ChatServer
-func NewServer(config *Config) *ChatServer {
-	server := ChatServer{}
+// NewServer constructs a Server
+func NewServer(config *Config) *Server {
+	server := Server{}
 	server.clients = NewClientRegistry()
 	server.quit = make(chan bool)
 	if config == nil {
@@ -65,14 +64,14 @@ func NewServer(config *Config) *ChatServer {
 		server.Config = config
 	}
 	if server.Config.Logger == nil {
-		server.Logger = log.New(os.Stdout, "ChatServer: ", log.Lshortfile)
+		server.Logger = log.New(os.Stdout, "Server: ", log.Lshortfile)
 	} else {
 		server.Logger = server.Config.Logger
 	}
 	return &server
 }
 
-func createClient(ws *websocket.Conn) *client.Client {
+func createClient(ws *websocket.Conn) *Client {
 	u, err := uuid.NewV4()
 	if err != nil {
 		panic("Failed to create UUID")
@@ -80,23 +79,23 @@ func createClient(ws *websocket.Conn) *client.Client {
 
 	id := u.String()
 
-	client := client.Client{ID: id, Conn: ws}
+	client := Client{ID: id, Conn: ws}
 
 	return &client
 }
 
 // AllClients returns all clients
-func (server *ChatServer) AllClients() []*client.Client {
+func (server *Server) AllClients() []*Client {
 	return server.clients.AsArray()
 }
 
 // Quit tells the server to stop handling requests
-func (server *ChatServer) Quit() {
+func (server *Server) Quit() {
 	server.quit <- true
 }
 
 // CreateAndRegisterClient creates and registers a client
-func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *client.Client {
+func (server *Server) CreateAndRegisterClient(ws *websocket.Conn) *Client {
 	client := createClient(ws)
 	server.clients.Register(client)
 
@@ -106,8 +105,8 @@ func (server *ChatServer) CreateAndRegisterClient(ws *websocket.Conn) *client.Cl
 }
 
 // DestroyClient removes a client from the registry
-func (server *ChatServer) DestroyClient(c *client.Client) {
-	server.clients.accessQueue <- func(clients map[string]*client.Client) {
+func (server *Server) DestroyClient(c *Client) {
+	server.clients.accessQueue <- func(clients map[string]*Client) {
 		server.Logger.Printf("Removing client from registry: %v\n", c)
 		delete(clients, c.ID)
 	}
@@ -115,7 +114,7 @@ func (server *ChatServer) DestroyClient(c *client.Client) {
 }
 
 // Send sends a message to a client
-func (f *Frame) Send(server *ChatServer) error {
+func (f *Frame) Send(server *Server) error {
 	rawFrame := RawFrame{
 		FromID:   f.FromClient.ID,
 		FromName: f.FromClient.Name,

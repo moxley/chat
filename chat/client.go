@@ -1,4 +1,4 @@
-package client
+package chat
 
 // Client a chat client
 import "golang.org/x/net/websocket"
