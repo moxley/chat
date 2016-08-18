@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/net/websocket"
 
@@ -45,30 +46,34 @@ func newConfig(t *testing.T, path string) *websocket.Config {
 	return config
 }
 
-func TestEcho(t *testing.T) {
+func startServerOnce() {
 	once.Do(startServer)
+}
 
-	client, err := net.Dial("tcp", serverAddr)
+func startClient(t *testing.T) *websocket.Conn {
+	tcpConn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		t.Fatal("dialing", err)
 	}
-	conn, err := websocket.NewClient(newConfig(t, "/websocket"), client)
+	wsConn, err := websocket.NewClient(newConfig(t, "/websocket"), tcpConn)
 	if err != nil {
 		t.Errorf("WebSocket handshake error: %v", err)
-		return
 	}
+	return wsConn
+}
 
-	// Send message
+func register(t *testing.T, clientConn *websocket.Conn, userName string) string {
+	// Send registration message
 	// {"action":"set-name","data":"moxley"}
-	sendFrame := &chatserver.Frame{Action: "set-name", Data: "moxley"}
-	err = websocket.JSON.Send(conn, sendFrame)
+	sendFrame := &chatserver.Frame{Action: "set-name", Data: userName}
+	err := websocket.JSON.Send(clientConn, sendFrame)
 	if err != nil {
 		t.Errorf("Write: %v", err)
 	}
 
 	// Receive message
 	var frame = chatserver.Frame{}
-	err = websocket.JSON.Receive(conn, &frame)
+	err = websocket.JSON.Receive(clientConn, &frame)
 	if err != nil {
 		t.Errorf("Read: %v", err)
 	}
@@ -78,9 +83,53 @@ func TestEcho(t *testing.T) {
 	if frame.FromName != "auto-reply" {
 		t.Errorf("Reply: expected %q, got %q", "auto-reply", frame.FromName)
 	}
-	if frame.Data != "Welcome moxley" {
-		t.Errorf("Reply: expected %q, got %q", "Welcome moxley", frame.Data)
+	expectedMsg := fmt.Sprintf("Welcome %s", userName)
+	if frame.Data != expectedMsg {
+		t.Errorf("Reply: expected %q, got %q", expectedMsg, frame.Data)
 	}
 
-	conn.Close()
+	return frame.To
+}
+
+// func TestRegistration(t *testing.T) {
+// 	startServerOnce()
+// 	clientConn := startClient(t)
+// 	register(t, clientConn, "moxley")
+// 	clientConn.Close()
+// }
+
+func TestRegularMessage(t *testing.T) {
+	var err error
+	startServerOnce()
+
+	moxleyConn := startClient(t)
+	moxleyID := register(t, moxleyConn, "moxley")
+	// register(t, moxleyConn, "moxley")
+
+	opheliaConn := startClient(t)
+	register(t, opheliaConn, "ophelia")
+
+	sendFrame := &chatserver.Frame{To: "all", Data: "Hello"}
+	err = websocket.JSON.Send(moxleyConn, sendFrame)
+	if err != nil {
+		t.Errorf("Write: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	receiveFrame := &chatserver.RawFrame{}
+	err = websocket.JSON.Receive(opheliaConn, receiveFrame)
+	if err != nil {
+		t.Errorf("Write: %v", err)
+	}
+
+	if receiveFrame.FromID != moxleyID {
+		t.Errorf("receiveFrame.From: expected %q, got %v", moxleyID, receiveFrame.FromID)
+	}
+	if receiveFrame.FromName != "moxley" {
+		t.Errorf("receiveFrame.From: expected %q, got %v", "moxley", receiveFrame.FromName)
+	}
+
+	moxleyConn.Close()
+	opheliaConn.Close()
 }

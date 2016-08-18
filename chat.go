@@ -145,8 +145,7 @@ func handleIncomingMessage(server *chatserver.ChatServer, frame *chatserver.Fram
 		return errors.New("Client failed")
 	}
 
-	// server.Logger.Printf("Received message. id: %v: to: %v, body: %v\n", frame.FromClient.ID, frame.To, frame.Data)
-	server.Logger.Printf("Received message. body: %v\n", frame.Data)
+	server.Logger.Printf("Received message. frame: %v\n", frame)
 
 	if frame.Action == "set-name" {
 		err = handleSetName(server, frame)

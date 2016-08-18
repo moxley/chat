@@ -1,6 +1,7 @@
 package chatserver
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -33,6 +34,10 @@ type RawFrame struct {
 	Action   string `json:"action"`
 }
 
+func (f *RawFrame) String() string {
+	return fmt.Sprintf("RawFrame{Action: %s, To: %s, FromID: %s, FromName: %s, Data: %s}", f.Action, f.To, f.FromID, f.FromName, f.Data)
+}
+
 // Frame is an incoming or outgoing Frame
 type Frame struct {
 	err        error
@@ -43,6 +48,10 @@ type Frame struct {
 	Action     string `json:"action"`
 	FromClient *client.Client
 	ToClient   *client.Client
+}
+
+func (f *Frame) String() string {
+	return fmt.Sprintf("Frame{Action: %s, To: %s, From: %s, Data: %s}", f.Action, f.To, f.From, f.Data)
 }
 
 // NewServer constructs a ChatServer
@@ -106,8 +115,14 @@ func (server *ChatServer) DestroyClient(c *client.Client) {
 }
 
 // Send sends a message to a client
-func (msg *Frame) Send(server *ChatServer) error {
-	err := websocket.JSON.Send(msg.ToClient.Conn, &msg)
+func (f *Frame) Send(server *ChatServer) error {
+	rawFrame := RawFrame{
+		FromID:   f.FromClient.ID,
+		FromName: f.FromClient.Name,
+		To:       f.ToClient.ID,
+		Data:     f.Data,
+	}
+	err := websocket.JSON.Send(f.ToClient.Conn, &rawFrame)
 	if err != nil {
 		server.Logger.Println("Failed to send message: " + err.Error())
 		return err
