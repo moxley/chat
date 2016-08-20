@@ -1,4 +1,4 @@
-package main
+package chat
 
 import (
 	"bytes"
@@ -12,19 +12,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/moxley/chat/chat"
-
 	"golang.org/x/net/websocket"
 )
 
 var serverAddr string
 var once sync.Once
 
-func createServer() *chat.Server {
+func createServer() *Server {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "Test:", log.Lshortfile)
-	config := &chat.Config{Logger: logger, Port: 8001}
-	return chat.NewServer(config)
+	config := &Config{Logger: logger, Port: 8001}
+	return NewServer(config)
 }
 
 func echoServer(ws *websocket.Conn) {
@@ -65,14 +63,14 @@ func startClient(t *testing.T) *websocket.Conn {
 func register(t *testing.T, clientConn *websocket.Conn, userName string) string {
 	// Send registration message
 	// {"action":"set-name","data":"moxley"}
-	sendFrame := &chat.Frame{Action: "set-name", Data: userName}
+	sendFrame := &Frame{Action: "set-name", Data: userName}
 	err := websocket.JSON.Send(clientConn, sendFrame)
 	if err != nil {
 		t.Errorf("Write: %v", err)
 	}
 
 	// Receive message
-	var frame = chat.Frame{}
+	var frame = Frame{}
 	err = websocket.JSON.Receive(clientConn, &frame)
 	if err != nil {
 		t.Errorf("Read: %v", err)
@@ -109,7 +107,7 @@ func TestRegularMessage(t *testing.T) {
 	opheliaConn := startClient(t)
 	register(t, opheliaConn, "ophelia")
 
-	sendFrame := &chat.Frame{To: "all", Data: "Hello"}
+	sendFrame := &Frame{To: "all", Data: "Hello"}
 	err = websocket.JSON.Send(moxleyConn, sendFrame)
 	if err != nil {
 		t.Errorf("Write: %v", err)
@@ -117,7 +115,7 @@ func TestRegularMessage(t *testing.T) {
 
 	time.Sleep(10 * time.Millisecond)
 
-	receiveFrame := &chat.RawFrame{}
+	receiveFrame := &RawFrame{}
 	err = websocket.JSON.Receive(opheliaConn, receiveFrame)
 	if err != nil {
 		t.Errorf("Write: %v", err)

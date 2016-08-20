@@ -22,3 +22,11 @@ including a GOPATH directory.
 2. Open a browser to `http://localhost:8080/`
 3. Provide a name
 4. Start chatting
+
+## Modifying the Code
+
+After making modifications, run the tests like this:
+
+```
+go test ./chat
+```
