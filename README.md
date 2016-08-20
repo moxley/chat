@@ -13,11 +13,13 @@ A chat system using Golang and websockets.
 Go must be installed, and your environment must be set up for Go development,
 including a GOPATH directory.
 
-1. Install chat
+1. Install the chatserver command
   ```
-  go get github.com/moxley/chat
-  go build github.com/moxley/chat
-  $GOPATH/bin/chat
+  go install github.com/moxley/chat/cmd/chatserver
+  ```
+2. Run the server:
+  ```
+  $GOPATH/bin/chatserver
   ```
 2. Open a browser to `http://localhost:8080/`
 3. Provide a name
@@ -28,5 +30,5 @@ including a GOPATH directory.
 After making modifications, run the tests like this:
 
 ```
-go test ./chat
+go test
 ```
